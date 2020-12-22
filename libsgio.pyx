@@ -617,7 +617,9 @@ cdef class SCSIDevice(object):
         for i in range(4, pagelen + 4):
             serial.append(data[i])
 
-        return bytearray(serial).decode().strip()
+        serial = bytearray(serial)
+
+        return serial.decode().strip().replace('\x00', '')
 
     def rotation_rate(self):
         """
