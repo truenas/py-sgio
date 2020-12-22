@@ -618,3 +618,41 @@ cdef class SCSIDevice(object):
             serial.append(data[i])
 
         return bytearray(serial).decode().strip()
+
+    def rotation_rate(self):
+        """
+        Request rotational rate
+        """
+
+        cdef unsigned char[8] cdb = [
+            0x12, 0x01, 0xb1, 0, 0, 0, 0, 0
+        ]
+        cdef unsigned int data_size = 0x00ff
+        cdef unsigned char[0x00ff] data
+        cdef unsigned int sense_len = 32
+        cdef unsigned char[32] sense
+
+        cdb[3] = (data_size >> 8) & 0xff
+        cdb[4] = data_size & 0xff
+
+        try:
+            self.issue_io(
+                cdb,
+                sizeof(cdb),
+                libsgio.SG_DXFER_FROM_DEV,
+                data,
+                &data_size,
+                sense,
+                &sense_len,
+            )
+        except RuntimeError:
+            # no reason to continue
+            raise
+
+        # handle errors
+        if sense_len != 0:
+            raise OSError(self.format_sense_data(sense, sense_len))
+
+        rotation = '0x' + f'{data[4]:02x}' + f'{data[5]:02x}'
+
+        return int(rotation, 16)
