@@ -574,3 +574,47 @@ cdef class SCSIDevice(object):
         # handle errors
         if sense_len != 0:
             raise OSError(self.format_sense_data(sense, sense_len))
+
+    def serial(self):
+        """
+        Request serial number
+        """
+
+        cdef unsigned char[6] cdb = [
+            0x12, 0x01, 0x80, 0, 0, 0,
+        ]
+        cdef unsigned int data_size = 0x00ff
+        cdef unsigned char[0x00ff] data
+        cdef unsigned int sense_len = 32
+        cdef unsigned char[32] sense
+        cdef int pagelen
+
+        cdb[3] = (data_size >> 8) & 0xff
+        cdb[4] = data_size & 0xff
+
+        try:
+            self.issue_io(
+                cdb,
+                sizeof(cdb),
+                libsgio.SG_DXFER_FROM_DEV,
+                data,
+                &data_size,
+                sense,
+                &sense_len,
+            )
+        except RuntimeError:
+            # no reason to continue
+            raise
+
+        # handle errors
+        if sense_len != 0:
+            raise OSError(self.format_sense_data(sense, sense_len))
+
+        # page length
+        pagelen = data[3]
+
+        serial = []
+        for i in range(4, pagelen + 4):
+            serial.append(data[i])
+
+        return bytearray(serial).decode().strip()
