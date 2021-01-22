@@ -37,7 +37,7 @@ cdef class SCSIDevice(object):
 
     cdef int issue_io(self, unsigned char *cdb, unsigned char cdb_size,
             int xfer_dir, unsigned char *data, unsigned int *data_size,
-            unsigned char *sense, unsigned int *sense_len):
+            unsigned char *sense, unsigned int *sense_len) except -1:
 
         self.io.interface_id = b'S'
         self.io.cmdp = cdb
