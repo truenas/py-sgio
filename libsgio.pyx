@@ -1,4 +1,5 @@
 # cython: language_level=3, c_string_type=unicode, c_string_encoding=default
+from os import strerror
 
 from pxd cimport libsgio
 
@@ -7,6 +8,7 @@ from posix.fcntl cimport open, O_RDONLY
 from posix.unistd cimport close
 from libc.stdlib cimport calloc, free
 from libc.string cimport memset
+from libc.errno cimport errno
 
 
 cdef class SCSIDevice(object):
@@ -24,7 +26,7 @@ cdef class SCSIDevice(object):
         with nogil:
             self.dev_fd = open(self.device, O_RDONLY)
             if self.dev_fd == -1:
-                raise OSError('Failed to open device')
+                raise OSError(errno, strerror(errno), self.device)
 
         with nogil:
             memset(&self.io, 0, sizeof(libsgio.sg_io_hdr_t))
