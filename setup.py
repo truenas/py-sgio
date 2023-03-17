@@ -1,5 +1,7 @@
 from setuptools import setup
 from Cython.Build import cythonize
+from Cython.Distutils.extension import Extension
+
 
 setup(
     name='libsgio',
@@ -8,5 +10,13 @@ setup(
         'setuptools>=45.0',
         'Cython',
     ],
-    ext_modules = cythonize('libsgio.pyx')
+    ext_modules = [
+        Extension(
+            'libsgio',
+            cythonize('src/libsgio.pyx'),
+        ),
+        Extension(
+            'libsgio.disk',
+            cythonzie('src/disk.pyx'),
+        )
 )

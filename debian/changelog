@@ -1,3 +1,11 @@
+py-sgio (0.2) experimental; urgency=medium
+
+  [ Caleb St. John ]
+  * refactor pyx files into src/ top level dir
+  * add disk_ioctl.pxd and disk.pyx
+
+ -- Caleb <yocalebo@gmail.com>  Fri, 17 Mar 2023 10:30:00 -0500
+
 py-sgio (0.1) experimental; urgency=medium
 
   [ Caleb St. John ]
