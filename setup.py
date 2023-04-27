@@ -1,5 +1,12 @@
-from setuptools import setup
+from setuptools import setup, Extension
 from Cython.Build import cythonize
+
+sgio = [
+    Extension("libsgio", ["libsgio.pyx"],
+              libraries=["sgutils2"],
+              library_dirs=["/usr/lib"],
+              include_dirs=["/usr/include"])
+]
 
 setup(
     name='libsgio',
@@ -8,5 +15,5 @@ setup(
         'setuptools>=45.0',
         'Cython',
     ],
-    ext_modules = cythonize('libsgio.pyx')
+    ext_modules = cythonize(sgio)
 )
