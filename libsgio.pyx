@@ -11,7 +11,7 @@ from libc.stdlib cimport calloc, free
 from libc.string cimport memset, memcpy, memcmp, strlen
 from libc.errno cimport errno
 from libc.stdio cimport snprintf
-from libc.stdint cimport uint8_t, uint32_t
+from libc.stdint cimport uint8_t, uint32_t, uint64_t
 
 import re
 
@@ -590,10 +590,13 @@ cdef class EnclosureDevice(object):
     cdef unsigned int CONFIGURATION_DPC
     cdef unsigned int ENC_STATUS_DPC
     cdef unsigned int ELEM_DESC_DPC
+    cdef unsigned int ELEM_TYPE_IND
+    cdef unsigned int ELEM_MASK_IND
     cdef char r_buff[8192]
     cdef char * start
     cdef char * end
-    cdef dict element_type_dict
+    cdef dict element_dict
+    cdef dict acron2loc
 
     def __cinit__(self, device):
         self.device = device
@@ -603,39 +606,42 @@ cdef class EnclosureDevice(object):
         self.rsp_buff = NULL
         self.tmp_buff = NULL
         self.free_rsp_buff = NULL
+        self.ELEM_TYPE_IND = 0
+        self.ELEM_MASK_IND = 1
         self.MX_ALLOC_LEN = ((64 * 1024) - 4)
         self.CONFIGURATION_DPC = 0x1
         self.ENC_STATUS_DPC = 0x2
         self.ELEM_DESC_DPC = 0x7
-        self.element_type_dict = {
-            SES_ETC.UNSPECIFIED_ETC : ["un", "Unspecified"],
-            SES_ETC.DEVICE_ETC : ["dev", "Device slot"],
-            SES_ETC.POWER_SUPPLY_ETC : ["ps", "Power supply"],
-            SES_ETC.COOLING_ETC : ["coo", "Cooling"],
-            SES_ETC.TEMPERATURE_ETC : ["ts", "Temperature sensor"],
-            SES_ETC.DOOR_ETC : ["do", "Door"],
-            SES_ETC.AUD_ALARM_ETC : ["aa", "Audible alarm"],
-            SES_ETC.ENC_SCELECTR_ETC : ["esc", "Enclosure services controller electronics"],
-            SES_ETC.SCC_CELECTR_ETC : ["sce", "SCC controller electronics"],
-            SES_ETC.NV_CACHE_ETC : ["nc", "Nonvolatile cache"],
-            SES_ETC.INV_OP_REASON_ETC : ["ior", "Invalid operation reason"],
-            SES_ETC.UI_POWER_SUPPLY_ETC : ["ups", "Uninterruptible power supply"],
-            SES_ETC.DISPLAY_ETC : ["dis", "Display"],
-            SES_ETC.KEY_PAD_ETC : ["kpe", "SCSI port/transceiver"],
-            SES_ETC.ENCLOSURE_ETC : ["enc", "Enclosure"],
-            SES_ETC.SCSI_PORT_TRAN_ETC : ["sp", "SCSI port/transceiver"],
-            SES_ETC.LANGUAGE_ETC : ["lan", "Language"],
-            SES_ETC.COMM_PORT_ETC : ["cp", "Communication port"],
-            SES_ETC.VOLT_SENSOR_ETC : ["vs", "Voltage sensor"],
-            SES_ETC.CURR_SENSOR_ETC : ["cs", "Current sensor"],
-            SES_ETC.SCSI_TPORT_ETC : ["stp", "SCSI target port"],
-            SES_ETC.SCSI_IPORT_ETC : ["sip", "SCSI initiator port"],
-            SES_ETC.SIMPLE_SUBENC_ETC : ["ss", "Simple subenclosure"],
-            SES_ETC.ARRAY_DEV_ETC : ["arr", "Array device slot"],
-            SES_ETC.SAS_EXPANDER_ETC : ["sse", "SAS expander"],
-            SES_ETC.SAS_CONNECTOR_ETC : ["ssc", "SAS connector"]
+        self.element_dict = {
+            SES_ETC.UNSPECIFIED_ETC : [["un", "Unspecified"], [0x40, 0xff, 0xff, 0xff]],
+            SES_ETC.DEVICE_ETC : [["dev", "Device slot"], [0x40, 0, 0x4e, 0x3c]],
+            SES_ETC.POWER_SUPPLY_ETC : [["ps", "Power supply"], [0x40, 0x80, 0, 0x60]],
+            SES_ETC.COOLING_ETC : [["coo", "Cooling"], [0x40, 0x80, 0, 0x60]],
+            SES_ETC.TEMPERATURE_ETC : [["ts", "Temperature sensor"], [0x40, 0xc0, 0, 0]],
+            SES_ETC.DOOR_ETC : [["do", "Door"], [0x40, 0xc0, 0, 0x1]],
+            SES_ETC.AUD_ALARM_ETC : [["aa", "Audible alarm"], [0x40, 0xc0, 0, 0x5f]],
+            SES_ETC.ENC_SCELECTR_ETC : [["esc", "Enclosure services controller electronics"], [0x40, 0xc0, 0x1, 0]],
+            SES_ETC.SCC_CELECTR_ETC : [["sce", "SCC controller electronics"], [0x40, 0xc0, 0, 0]],
+            SES_ETC.NV_CACHE_ETC : [["nc", "Nonvolatile cache"], [0x40, 0xc0, 0, 0]],
+            SES_ETC.INV_OP_REASON_ETC : [["ior", "Invalid operation reason"], [0x40, 0, 0, 0]],
+            SES_ETC.UI_POWER_SUPPLY_ETC : [["ups", "Uninterruptible power supply"], [0x40, 0, 0, 0xc0]],
+            SES_ETC.DISPLAY_ETC : [["dis", "Display"], [0x40, 0xc0, 0xff, 0xff]],
+            SES_ETC.KEY_PAD_ETC : [["kpe", "SCSI port/transceiver"], [0x40, 0xc3, 0, 0]],
+            SES_ETC.ENCLOSURE_ETC : [["enc", "Enclosure"], [0x40, 0x80, 0, 0xff]],
+            SES_ETC.SCSI_PORT_TRAN_ETC : [["sp", "SCSI port/transceiver"], [0x40, 0xc0, 0, 0x10]],
+            SES_ETC.LANGUAGE_ETC : [["lan", "Language"], [0x40, 0x80, 0xff, 0xff]],
+            SES_ETC.COMM_PORT_ETC : [["cp", "Communication port"], [0x40, 0xc0, 0, 0x1]],
+            SES_ETC.VOLT_SENSOR_ETC : [["vs", "Voltage sensor"], [0x40, 0xc0, 0, 0]],
+            SES_ETC.CURR_SENSOR_ETC : [["cs", "Current sensor"], [0x40, 0xc0, 0, 0]],
+            SES_ETC.SCSI_TPORT_ETC : [["stp", "SCSI target port"], [0x40, 0xc0, 0, 0x1]],
+            SES_ETC.SCSI_IPORT_ETC : [["sip", "SCSI initiator port"], [0x40, 0xc0, 0, 0x1]],
+            SES_ETC.SIMPLE_SUBENC_ETC : [["ss", "Simple subenclosure"], [0x40, 0xc0, 0, 0]],
+            SES_ETC.ARRAY_DEV_ETC : [["arr", "Array device slot"], [0x40, 0xff, 0x4e, 0x3c]],
+            SES_ETC.SAS_EXPANDER_ETC : [["sse", "SAS expander"], [0x40, 0xc0, 0, 0]],
+            SES_ETC.SAS_CONNECTOR_ETC : [["ssc", "SAS connector"], [0x40, 0x80, 0, 0x40]]
         }
 
+        self.init_acron2loc()
         with nogil:
             self.dev_fd = ses.sg_cmds_open_device(self.device, True, 0)
             if self.dev_fd < 0:
@@ -668,6 +674,130 @@ cdef class EnclosureDevice(object):
             if self.ptvp != NULL:
                 ses.destruct_scsi_pt_obj(self.ptvp)
 
+    def init_acron2loc(self):
+        self.acron2loc = {
+            SES_ETC.DEVICE_ETC : {
+                'active': [2, 7, 1, None], 'bypa': [3, 3, 1, 'bypass port A'], 'bypb': [3, 2, 1, 'bypass port B'],
+                'devoff': [3, 4, 1, None], 'dnr': [2, 6, 1, 'do not remove'], 'fault': [3, 5, 1, None],
+                'ident': [2, 1, 1, 'flash LED'], 'insert': [2, 3, 1, None], 'locate': [2, 1, 1, 'flash LED'],
+                'missing': [2, 4, 1, None], 'remove': [2, 2, 1, None]
+            },
+            SES_ETC.POWER_SUPPLY_ETC : {
+                'dnr': [1, 6, 1, 'do not remove'], 'fail': [3, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'],
+                'locate': [1, 7, 1, 'flash LED'], 'off': [3, 4, 1, 'Not providing power'],
+                'on': [3, 5, 1, '0: turn (remain) off; 1: turn on'], 'overcurrent': [2, 1, 1, 'DC overcurrent'],
+                'overvoltage': [2, 3, 1, 'DC overvoltage'], 'overvoltage_warn': [1, 3, 1, 'DC overvoltage warning'],
+                'undervoltage': [2, 2, 1, 'DC undervoltage'], 'undervoltage_warn': [1, 2, 1, 'DC undervoltage warning']
+            },
+            SES_ETC.COOLING_ETC : {
+                'dnr': [1, 6, 1, 'do not remove'], 'fail': [3, 6, 1, None], 'hotswap': [3, 7, 1, None], 'ident': [1, 7, 1, 'flash LED'],
+                'locate': [1, 7, 1, 'flash LED'], 'off': [3, 4, 1, 'Not providing cooling'], 'on': [3, 5, 1, None],
+                'speed_act': [1, 2, 11, 'actual speed (rpm / 10)'], 'speed_code': [3, 2, 3, '0: leave; 1: lowest... 7: highest']
+            },
+            SES_ETC.TEMPERATURE_ETC : {
+                'fail': [3, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'],
+                'offset_temp': [1, 5, 6, 'Offset for reference temperature'], 'overtemp_fail': [3, 3, 1, 'Overtemperature failure'],
+                'overtemp_warn': [3, 2, 1, 'Overtemperature warning'], 'rqst_override': [3, 7, 1, 'Request(ed) override'],
+                'temp': [2, 7, 8, '(Requested) temperature'], 'undertemp_fail': [3, 1, 1, 'Undertemperature failure'],
+                'undertemp_warn': [3, 0, 1, 'Undertemperature warning']
+            },
+            SES_ETC.DOOR_ETC : {
+                'fail': [1, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'],'open': [3, 1, 1, None],
+                'unlock': [3, 0, 1, None]
+            },
+            SES_ETC.AUD_ALARM_ETC : {
+                'fail': [1, 6, 1, None], 'ident': [1, 7, 1, None], 'info': [3, 3, 1, 'emits warning tone when set'],
+                'locate': [1, 7, 1, None], 'mute': [3, 6, 1, 'control only: mute the alarm'],
+                'muted': [3, 6, 1, 'status only: alarm is muted'], 'remind': [3, 4, 1, None],
+                'rqst_mute': [3, 7, 1, 'status only: alarm was manually muted'], 'urgency': [3, 3, 4, None]
+            },
+            SES_ETC.ENC_SCELECTR_ETC : {
+                'dnr': [1, 5, 1, 'do not remove'], 'fail': [1, 6, 1, None], 'hotswap': [3, 7, 1, None],
+                'hw_reset': [1, 2, 1, 'hardware reset'], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'],
+                'report': [2, 0, 1, None], 'select_element': [2, 0, 1, None], 'sw_reset': [1, 3, 1, 'software reset']
+            },
+            SES_ETC.SCC_CELECTR_ETC : {
+                'fail': [3, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'], 'report': [2, 0, 1, None]
+            },
+            SES_ETC.NV_CACHE_ETC : {
+                'fail': [3, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'], 'size': [2, 7, 16, None],
+                'size_mult': [1, 1, 2, None]
+            },
+            SES_ETC.UI_POWER_SUPPLY_ETC : {
+                'ac_fail': [2, 4, 1, None], 'ac_hi': [2, 6, 1, None], 'ac_lo': [2, 7, 1, None], 'ac_qual': [2, 5, 1, None],
+                'batt_fail': [3, 1, 1, None], 'bpf': [3, 0, 1, None], 'dc_fail': [2, 3, 1, None], 'dnr': [3, 3, 1, 'do not remove'],
+                'fail': [3, 6, 1, None], 'ident': [3, 7, 1, 'flash LED'], 'intf_fail': [2, 0, 1, None], 'locate': [3, 7, 1, 'flash LED'],
+                'ups_fail': [2, 2, 1, None], 'warning': [2, 1, 1, None]
+            },
+            SES_ETC.DISPLAY_ETC : {
+                'disp_mode': [1, 1, 2, None], 'disp_char': [2, 7, 16, None], 'fail': [1, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'],
+                'locate': [1, 7, 1, 'flash LED']
+            },
+            SES_ETC.KEY_PAD_ETC : {
+                'fail': [1, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED']
+            },
+            SES_ETC.ENCLOSURE_ETC : {
+                'failure_ind': [2, 1, 1, None], 'failure': [3, 1, 1, None], 'ident': [1, 7, 1, 'flash LED'],
+                'locate': [1, 7, 1, 'flash LED'], 'pow_cycle': [2, 7, 2, '0: no; 1: start in pow_c_delay minutes; 2: cancel'],
+                'pow_c_delay': [2, 5, 6, 'delay in minutes before starting power cycle (max: 60)'],
+                'pow_c_duration': [3, 7, 6, '0: power off, restore within 1 minute; <=60: restore within that many minutes; 63: power off, wait for manual power on'],
+                'pow_c_time': [2, 7, 6, 'time in minutes remaining until starting power cycle; 0: not scheduled; <=60: scheduled in that many minutes; 63: in zero minutes'],
+                'warning': [3, 0, 1, None], 'warning_ind': [2, 0, 1, None]
+            },
+            SES_ETC.SCSI_PORT_TRAN_ETC : {
+                'disable_elm': [3, 4, 1, 'disable port/transceiver'], 'fail': [1, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'],
+                'locate': [1, 7, 1, 'flash LED'], 'lol': [3, 1, 1, 'Loss of Link'], 'xmit_fail': [3, 0, 1, 'Transmitter failure']
+            },
+            SES_ETC.LANGUAGE_ETC : {
+                'ident': [1, 7, 1, 'flash LED'], 'language': [2, 7, 16, 'language code'], 'locate': [1, 7, 1, 'flash LED']
+            },
+            SES_ETC.COMM_PORT_ETC : {
+                'disable_elm': [3, 0, 1, 'disable communication port'], 'fail': [1, 7, 1, None], 'ident': [1, 7, 1, 'flash LED'],
+                'locate': [1, 7, 1, 'flash LED']
+            },
+            SES_ETC.VOLT_SENSOR_ETC : {
+                'fail': [1, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'],
+                'overvoltage': [1, 1, 1, 'overvoltage'], 'undervoltage': [1, 0, 1, 'undervoltage'],
+                'voltage': [2, 7, 16, 'voltage in centivolts']
+            },
+            SES_ETC.CURR_SENSOR_ETC : {
+                'current': [2, 7, 16, 'current in centiamps'], 'fail': [3, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'],
+                'locate': [1, 7, 1, 'flash LED'], 'overcurrent': [1, 1, 1, 'overcurrent'],
+                'overcurrent_warn': [1, 3, 1, 'overcurrent warning']
+            },
+            SES_ETC.SCSI_TPORT_ETC : {
+                'enable': [3, 0, 1, None], 'fail': [1, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'],
+                'report': [2, 0, 1, None]
+            },
+            SES_ETC.SCSI_IPORT_ETC : {
+                'enable': [3, 0, 1, None], 'fail': [1, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'],
+                'report': [2, 0, 1, None]
+            },
+            SES_ETC.SIMPLE_SUBENC_ETC : {
+                'fail': [1, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'],
+                'short_stat': [3, 7, 8, 'short enclosure status']
+            },
+            SES_ETC.ARRAY_DEV_ETC : {
+                'active': [2, 7, 1, None], 'bypa': [3, 3, 1, 'bypass port A'], 'bypb': [3, 2, 1, 'bypass port B'],
+                'conscheck': [1, 4, 1, 'consistency check'], 'devoff': [3, 4, 1, None], 'dnr': [2, 6, 1, 'do not remove'],
+                'fault': [3, 5, 1, None], 'hotspare': [1, 5, 1, None], 'ident': [2, 1, 1, 'flash LED'], 'incritarray': [1, 3, 1, None],
+                'infailedarray': [1, 2, 1, None], 'insert': [2, 3, 1, None], 'locate': [2, 1, 1, 'flash LED'], 'missing': [2, 4, 1, None],
+                'ok': [1, 7, 1, None], 'rebuildremap': [1, 1, 1, None], 'remove': [2, 2, 1, None],
+                'rrabort': [1, 0, 1, 'rebuild/remap abort'], 'rsvddevice': [1, 6, 1, 'reserved device']
+            },
+            SES_ETC.SAS_EXPANDER_ETC : {
+                'fail': [1, 6, 1, None], 'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED']
+            },
+            SES_ETC.SAS_CONNECTOR_ETC : {
+                'ctr_link': [2, 7, 8, 'connector physical link'], 'ctr_type': [1, 6, 7, 'connector type'], 'fail': [3, 6, 1, None],
+                'ident': [1, 7, 1, 'flash LED'], 'locate': [1, 7, 1, 'flash LED'], 'mated': [3, 7, 1, None],
+                'overcurrent': [3, 5, 1, None]
+            },
+            -1 : {
+                'disable': ['-1', 0, 5, 1, None], 'prdfail': ['-1', 0, 6, 1, 'predict failure'], 'swap': ['-1', 0, 4, 1, None]
+            }
+        }
+
     cdef void clear_r_buff(self) nogil:
         memset(self.r_buff, 0, 4096)
         self.start = self.r_buff
@@ -690,8 +820,8 @@ cdef class EnclosureDevice(object):
     cdef char * etype_str(self, int elem_code, char * buff, int buff_len) nogil:
         cdef int len
         with gil:
-            if elem_code in self.element_type_dict:
-                return self.element_type_dict[elem_code][1]
+            if elem_code in self.element_dict:
+                return self.element_dict[elem_code][self.ELEM_TYPE_IND][1]
 
         if elem_code < 0x80:
             snprintf(buff, buff_len - 1, "[0x%x]", elem_code)
@@ -1111,3 +1241,102 @@ cdef class EnclosureDevice(object):
 
         enclosure["elements"] = elements
         return enclosure
+
+    def set_control(self, index, command):
+        cdef int len = -1, match = -1
+        cdef int k, j, num_ths, desc_len, ind_th, ind_indiv, ind, sbyte, sbit, nbits
+        cdef uint32_t ref_gen
+        cdef uint8_t * bp
+        cdef uint8_t * last_bp
+        cdef ses.enclosure_info info
+        cdef ses.type_desc_hdr_t * tp
+        cdef uint64_t value = -1
+
+        if ',' not in index:
+            ind_th = 0
+            ind_indiv = int(index)
+        else:
+            ind_th = int(index.split(',')[0])
+            ind_indiv = int(index.split(',')[1])
+
+        command = command.split("=")
+        if command[0] == "set":
+            value = 1
+            w = 1
+            r = 0
+        elif command[0] == "clear":
+            value = 0
+            w = 1
+            r = 0
+        elif command[0] == "get":
+            r = 1
+            w = 0
+        else:
+            raise OSError(-1, "Control command not correct.")
+
+        with nogil:
+            self.clear_r_buff()
+            num_ths = self.build_tdhs(&ref_gen, &info)
+            self.clear_ptvp()
+            if num_ths < 0:
+                self.clear_objs()
+                raise OSError(-1, bytes(self.r_buff, encoding='ascii').decode())
+
+            if self.get_diagnostic_page(self.ENC_STATUS_DPC, self.rsp_buff, &len) != 0:
+                raise OSError(-1, bytes(self.r_buff, encoding='ascii').decode())
+            self.clear_ptvp()
+
+            if len < 8:
+                self.clear_objs()
+                raise OSError(-1, "Enclosure Control: response too short.")
+
+            if ind_th < 0 or ind_th >= num_ths:
+                self.clear_objs()
+                raise OSError(-1, "Unable to find Index: " + index)
+
+            last_bp = self.rsp_buff + len - 1
+            if ses.sg_get_unaligned_be32(self.rsp_buff + 4) != ref_gen:
+                self.clear_objs()
+                raise OSError(-1, "Enclosure status changed.")
+
+            bp = self.rsp_buff + 8
+            tp = self.desc_hdrs
+            for k in range(0, num_ths):
+                if bp + 3 > last_bp:
+                    self.clear_objs()
+                    raise OSError(-1, "Enclosure Control: response too short.")  
+                bp += 4
+                if k == ind_th:
+                    if ind_indiv < 0 or ind_indiv >= tp.num_elements:
+                        self.clear_objs()
+                        raise OSError(-1, "Unable to find Index: " + index)
+                    with gil:
+                        if tp.etype not in self.acron2loc:
+                            self.clear_objs()
+                            raise OSError(-1, "Control field not allowed for Element type: " + str(tp.etype))
+                        if command[1] not in self.acron2loc[tp.etype]:
+                            self.clear_objs()
+                            raise OSError(-1, "Control field not correct for Element type: " + str(tp.etype))
+                        sbyte = self.acron2loc[tp.etype][command[1]][0]
+                        sbit = self.acron2loc[tp.etype][command[1]][1]
+                        nbits = self.acron2loc[tp.etype][command[1]][2]
+                    bp += (4 * ind_indiv)
+                    if r:
+                        value = ses.sg_get_big_endian(bp + sbyte, sbit, nbits)
+                        break
+                    elif w:
+                        with gil:
+                            for i in range(4):
+                                bp[i] &= self.element_dict[tp.etype][self.ELEM_MASK_IND][i]
+                        ses.sg_set_big_endian(value, bp + sbyte, sbit, nbits)
+                        bp[0] |= 0x80
+                        len = ses.sg_get_unaligned_be16(self.rsp_buff + 2) + 4
+                        value = ses.sg_ll_send_diag_pt(self.ptvp, 0, True, False, False, False , 0, self.rsp_buff, len, False, 0)
+                        break
+                else:
+                    bp += (4 * tp.num_elements)
+                tp += 1
+
+            self.clear_objs()
+            with gil:
+                return value
