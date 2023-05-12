@@ -595,8 +595,6 @@ cdef class EnclosureDevice(object):
     cdef char r_buff[8192]
     cdef char * start
     cdef char * end
-    cdef dict element_dict
-    cdef dict acron2loc
 
     def __cinit__(self, device):
         self.device = device
@@ -606,56 +604,18 @@ cdef class EnclosureDevice(object):
         self.rsp_buff = NULL
         self.tmp_buff = NULL
         self.free_rsp_buff = NULL
+        self.free_tmp_buff = NULL
         self.ELEM_TYPE_IND = 0
         self.ELEM_MASK_IND = 1
         self.MX_ALLOC_LEN = ((64 * 1024) - 4)
         self.CONFIGURATION_DPC = 0x1
         self.ENC_STATUS_DPC = 0x2
         self.ELEM_DESC_DPC = 0x7
-        self.element_dict = {
-            SES_ETC.UNSPECIFIED_ETC : [["un", "Unspecified"], [0x40, 0xff, 0xff, 0xff]],
-            SES_ETC.DEVICE_ETC : [["dev", "Device slot"], [0x40, 0, 0x4e, 0x3c]],
-            SES_ETC.POWER_SUPPLY_ETC : [["ps", "Power supply"], [0x40, 0x80, 0, 0x60]],
-            SES_ETC.COOLING_ETC : [["coo", "Cooling"], [0x40, 0x80, 0, 0x60]],
-            SES_ETC.TEMPERATURE_ETC : [["ts", "Temperature sensor"], [0x40, 0xc0, 0, 0]],
-            SES_ETC.DOOR_ETC : [["do", "Door"], [0x40, 0xc0, 0, 0x1]],
-            SES_ETC.AUD_ALARM_ETC : [["aa", "Audible alarm"], [0x40, 0xc0, 0, 0x5f]],
-            SES_ETC.ENC_SCELECTR_ETC : [["esc", "Enclosure services controller electronics"], [0x40, 0xc0, 0x1, 0]],
-            SES_ETC.SCC_CELECTR_ETC : [["sce", "SCC controller electronics"], [0x40, 0xc0, 0, 0]],
-            SES_ETC.NV_CACHE_ETC : [["nc", "Nonvolatile cache"], [0x40, 0xc0, 0, 0]],
-            SES_ETC.INV_OP_REASON_ETC : [["ior", "Invalid operation reason"], [0x40, 0, 0, 0]],
-            SES_ETC.UI_POWER_SUPPLY_ETC : [["ups", "Uninterruptible power supply"], [0x40, 0, 0, 0xc0]],
-            SES_ETC.DISPLAY_ETC : [["dis", "Display"], [0x40, 0xc0, 0xff, 0xff]],
-            SES_ETC.KEY_PAD_ETC : [["kpe", "SCSI port/transceiver"], [0x40, 0xc3, 0, 0]],
-            SES_ETC.ENCLOSURE_ETC : [["enc", "Enclosure"], [0x40, 0x80, 0, 0xff]],
-            SES_ETC.SCSI_PORT_TRAN_ETC : [["sp", "SCSI port/transceiver"], [0x40, 0xc0, 0, 0x10]],
-            SES_ETC.LANGUAGE_ETC : [["lan", "Language"], [0x40, 0x80, 0xff, 0xff]],
-            SES_ETC.COMM_PORT_ETC : [["cp", "Communication port"], [0x40, 0xc0, 0, 0x1]],
-            SES_ETC.VOLT_SENSOR_ETC : [["vs", "Voltage sensor"], [0x40, 0xc0, 0, 0]],
-            SES_ETC.CURR_SENSOR_ETC : [["cs", "Current sensor"], [0x40, 0xc0, 0, 0]],
-            SES_ETC.SCSI_TPORT_ETC : [["stp", "SCSI target port"], [0x40, 0xc0, 0, 0x1]],
-            SES_ETC.SCSI_IPORT_ETC : [["sip", "SCSI initiator port"], [0x40, 0xc0, 0, 0x1]],
-            SES_ETC.SIMPLE_SUBENC_ETC : [["ss", "Simple subenclosure"], [0x40, 0xc0, 0, 0]],
-            SES_ETC.ARRAY_DEV_ETC : [["arr", "Array device slot"], [0x40, 0xff, 0x4e, 0x3c]],
-            SES_ETC.SAS_EXPANDER_ETC : [["sse", "SAS expander"], [0x40, 0xc0, 0, 0]],
-            SES_ETC.SAS_CONNECTOR_ETC : [["ssc", "SAS connector"], [0x40, 0x80, 0, 0x40]]
-        }
 
-        self.init_acron2loc()
         with nogil:
             self.dev_fd = ses.sg_cmds_open_device(self.device, True, 0)
             if self.dev_fd < 0:
                 raise OSError(errno, strerror(errno), self.device)
-
-            self.rsp_buff = ses.sg_memalign(self.MX_ALLOC_LEN, 0, &self.free_rsp_buff, False)
-            if self.rsp_buff == NULL:
-                raise OSError(-12, strerror(-12), self.device) # ENOMEM
-            memset(self.rsp_buff, 0, self.MX_ALLOC_LEN)
-
-            self.tmp_buff = ses.sg_memalign(self.MX_ALLOC_LEN, 0, &self.free_tmp_buff, False)
-            if self.tmp_buff == NULL:
-                raise OSError(-12, strerror(-12), self.device) # ENOMEM
-            memset(self.tmp_buff, 0, self.MX_ALLOC_LEN)
 
             self.ptvp = ses.construct_scsi_pt_obj_with_fd(self.dev_fd, 0)
             if self.ptvp == NULL:
@@ -667,15 +627,86 @@ cdef class EnclosureDevice(object):
         with nogil:
             if self.dev_fd >= 0:
                 ses.sg_cmds_close_device(self.dev_fd)
-            if self.rsp_buff != NULL:
-                free(self.free_rsp_buff)
-            if self.tmp_buff != NULL:
-                free(self.free_tmp_buff)
             if self.ptvp != NULL:
                 ses.destruct_scsi_pt_obj(self.ptvp)
 
-    def init_acron2loc(self):
-        self.acron2loc = {
+    cdef int alloc_resp_buffs(self) nogil:
+        self.rsp_buff = ses.sg_memalign(self.MX_ALLOC_LEN, 0, &self.free_rsp_buff, False)
+        if self.rsp_buff == NULL:
+            return -1
+        memset(self.rsp_buff, 0, self.MX_ALLOC_LEN)
+        self.tmp_buff = ses.sg_memalign(self.MX_ALLOC_LEN, 0, &self.free_tmp_buff, False)
+        if self.tmp_buff == NULL:
+            return -1
+        memset(self.tmp_buff, 0, self.MX_ALLOC_LEN)
+        return 0
+
+    cdef void free_resp_buffs(self) nogil:
+        if self.free_rsp_buff != NULL:
+            free(self.free_rsp_buff)
+        if self.free_rsp_buff != NULL:
+            free(self.free_tmp_buff)
+        self.rsp_buff = NULL
+        self.tmp_buff = NULL
+        self.free_rsp_buff = NULL
+        self.free_tmp_buff = NULL
+
+    cdef void clear_r_buff(self) nogil:
+        memset(self.r_buff, 0, 4096)
+        self.start = self.r_buff
+        self.end = self.r_buff + sizeof(self.r_buff)
+
+    cdef void clear_ptvp(self) nogil:
+        if self.ptvp != NULL:
+            ses.clear_scsi_pt_obj(self.ptvp)
+
+    cdef void clear_objs(self) nogil:
+        self.free_resp_buffs()
+        self.clear_ptvp()
+
+    cdef char * etype_str(self, int elem_code, char * buff, int buff_len) nogil:
+        cdef int len
+        with gil:
+            element_dict = {
+                SES_ETC.UNSPECIFIED_ETC : ["un", "Unspecified"],
+                SES_ETC.DEVICE_ETC : ["dev", "Device slot"],
+                SES_ETC.POWER_SUPPLY_ETC : ["ps", "Power supply"],
+                SES_ETC.COOLING_ETC : ["coo", "Cooling"],
+                SES_ETC.TEMPERATURE_ETC : ["ts", "Temperature sensor"],
+                SES_ETC.DOOR_ETC : ["do", "Door"],
+                SES_ETC.AUD_ALARM_ETC : ["aa", "Audible alarm"],
+                SES_ETC.ENC_SCELECTR_ETC : ["esc", "Enclosure services controller electronics"],
+                SES_ETC.SCC_CELECTR_ETC : ["sce", "SCC controller electronics"],
+                SES_ETC.NV_CACHE_ETC : ["nc", "Nonvolatile cache"],
+                SES_ETC.INV_OP_REASON_ETC : ["ior", "Invalid operation reason"],
+                SES_ETC.UI_POWER_SUPPLY_ETC : ["ups", "Uninterruptible power supply"],
+                SES_ETC.DISPLAY_ETC : ["dis", "Display"],
+                SES_ETC.KEY_PAD_ETC : ["kpe", "SCSI port/transceiver"],
+                SES_ETC.ENCLOSURE_ETC : ["enc", "Enclosure"],
+                SES_ETC.SCSI_PORT_TRAN_ETC : ["sp", "SCSI port/transceiver"],
+                SES_ETC.LANGUAGE_ETC : ["lan", "Language"],
+                SES_ETC.COMM_PORT_ETC : ["cp", "Communication port"],
+                SES_ETC.VOLT_SENSOR_ETC : ["vs", "Voltage sensor"],
+                SES_ETC.CURR_SENSOR_ETC : ["cs", "Current sensor"],
+                SES_ETC.SCSI_TPORT_ETC : ["stp", "SCSI target port"],
+                SES_ETC.SCSI_IPORT_ETC : ["sip", "SCSI initiator port"],
+                SES_ETC.SIMPLE_SUBENC_ETC : ["ss", "Simple subenclosure"],
+                SES_ETC.ARRAY_DEV_ETC : ["arr", "Array device slot"],
+                SES_ETC.SAS_EXPANDER_ETC : ["sse", "SAS expander"],
+                SES_ETC.SAS_CONNECTOR_ETC : ["ssc", "SAS connector"]
+            }
+            if elem_code in element_dict:
+                return element_dict[elem_code][1]
+
+        if elem_code < 0x80:
+            snprintf(buff, buff_len - 1, "[0x%x]", elem_code)
+        else:
+            snprintf(buff, buff_len - 1, "vendor specific [0x%x]", elem_code)
+
+        return buff
+
+    def get_acron2locs(self, index, cmd):
+        acron2loc = {
             SES_ETC.DEVICE_ETC : {
                 'active': [2, 7, 1, None], 'bypa': [3, 3, 1, 'bypass port A'], 'bypb': [3, 2, 1, 'bypass port B'],
                 'devoff': [3, 4, 1, None], 'dnr': [2, 6, 1, 'do not remove'], 'fault': [3, 5, 1, None],
@@ -797,38 +828,44 @@ cdef class EnclosureDevice(object):
                 'disable': ['-1', 0, 5, 1, None], 'prdfail': ['-1', 0, 6, 1, 'predict failure'], 'swap': ['-1', 0, 4, 1, None]
             }
         }
+        if index not in acron2loc:
+            self.clear_objs()
+            raise OSError(-1, "Control not allowed for Element type: " + str(index))
+        if cmd not in acron2loc[index]:
+            self.clear_objs()
+            raise OSError(-1, "Control field " + cmd + " not correct for Element type: " + str(index))
+        return acron2loc[index][cmd]
 
-    cdef void clear_r_buff(self) nogil:
-        memset(self.r_buff, 0, 4096)
-        self.start = self.r_buff
-        self.end = self.r_buff + sizeof(self.r_buff)
-
-    cdef void clear_resp_buffs(self) nogil:
-        if self.rsp_buff != NULL:
-            memset(self.rsp_buff, 0, self.MX_ALLOC_LEN)
-        if self.tmp_buff != NULL:
-            memset(self.tmp_buff, 0, self.MX_ALLOC_LEN)
-
-    cdef void clear_ptvp(self) nogil:
-        if self.ptvp != NULL:
-            ses.clear_scsi_pt_obj(self.ptvp)
-
-    cdef void clear_objs(self) nogil:
-        self.clear_resp_buffs()
-        self.clear_ptvp()
-
-    cdef char * etype_str(self, int elem_code, char * buff, int buff_len) nogil:
-        cdef int len
-        with gil:
-            if elem_code in self.element_dict:
-                return self.element_dict[elem_code][self.ELEM_TYPE_IND][1]
-
-        if elem_code < 0x80:
-            snprintf(buff, buff_len - 1, "[0x%x]", elem_code)
-        else:
-            snprintf(buff, buff_len - 1, "vendor specific [0x%x]", elem_code)
-
-        return buff
+    def get_et_mask(self, index):
+        element_dict = {
+            SES_ETC.UNSPECIFIED_ETC : [0x40, 0xff, 0xff, 0xff],
+            SES_ETC.DEVICE_ETC : [0x40, 0, 0x4e, 0x3c],
+            SES_ETC.POWER_SUPPLY_ETC : [0x40, 0x80, 0, 0x60],
+            SES_ETC.COOLING_ETC : [0x40, 0x80, 0, 0x60],
+            SES_ETC.TEMPERATURE_ETC : [0x40, 0xc0, 0, 0],
+            SES_ETC.DOOR_ETC : [0x40, 0xc0, 0, 0x1],
+            SES_ETC.AUD_ALARM_ETC : [0x40, 0xc0, 0, 0x5f],
+            SES_ETC.ENC_SCELECTR_ETC : [0x40, 0xc0, 0x1, 0],
+            SES_ETC.SCC_CELECTR_ETC : [0x40, 0xc0, 0, 0],
+            SES_ETC.NV_CACHE_ETC : [0x40, 0xc0, 0, 0],
+            SES_ETC.INV_OP_REASON_ETC : [0x40, 0, 0, 0],
+            SES_ETC.UI_POWER_SUPPLY_ETC : [0x40, 0, 0, 0xc0],
+            SES_ETC.DISPLAY_ETC : [0x40, 0xc0, 0xff, 0xff],
+            SES_ETC.KEY_PAD_ETC : [0x40, 0xc3, 0, 0],
+            SES_ETC.ENCLOSURE_ETC : [0x40, 0x80, 0, 0xff],
+            SES_ETC.SCSI_PORT_TRAN_ETC : [0x40, 0xc0, 0, 0x10],
+            SES_ETC.LANGUAGE_ETC : [0x40, 0x80, 0xff, 0xff],
+            SES_ETC.COMM_PORT_ETC : [0x40, 0xc0, 0, 0x1],
+            SES_ETC.VOLT_SENSOR_ETC : [0x40, 0xc0, 0, 0],
+            SES_ETC.CURR_SENSOR_ETC : [0x40, 0xc0, 0, 0],
+            SES_ETC.SCSI_TPORT_ETC : [0x40, 0xc0, 0, 0x1],
+            SES_ETC.SCSI_IPORT_ETC : [0x40, 0xc0, 0, 0x1],
+            SES_ETC.SIMPLE_SUBENC_ETC : [0x40, 0xc0, 0, 0],
+            SES_ETC.ARRAY_DEV_ETC : [0x40, 0xff, 0x4e, 0x3c],
+            SES_ETC.SAS_EXPANDER_ETC : [0x40, 0xc0, 0, 0],
+            SES_ETC.SAS_CONNECTOR_ETC : [0x40, 0x80, 0, 0x40]
+        }
+        return element_dict[index]
 
     cdef int get_diagnostic_page(self, int page_code, unsigned char * buff, int * rsp_len) nogil:
         cdef int ret = -1
@@ -876,9 +913,9 @@ cdef class EnclosureDevice(object):
                 self.desc_hdrs_count += 1
             return -1
 
-        num_subs = self.tmp_buff[1] + 1;
+        num_subs = self.tmp_buff[1] + 1
         sum_type_dheaders = el = 0
-        last_bp = self.tmp_buff + len - 1;
+        last_bp = self.tmp_buff + len - 1
         bp = self.tmp_buff + 8
         generation[0] = ses.sg_get_unaligned_be32(self.tmp_buff + 4)
 
@@ -909,10 +946,10 @@ cdef class EnclosureDevice(object):
             if k >= 1024:
                 self.start += snprintf(self.start, self.end - self.start, "Too many elements.\n")
                 return -1
-            self.desc_hdrs[k].etype = bp[0];
-            self.desc_hdrs[k].num_elements = bp[1];
-            self.desc_hdrs[k].se_id = bp[2];
-            self.desc_hdrs[k].txt_len = bp[3];
+            self.desc_hdrs[k].etype = bp[0]
+            self.desc_hdrs[k].num_elements = bp[1]
+            self.desc_hdrs[k].se_id = bp[2]
+            self.desc_hdrs[k].txt_len = bp[3]
             bp += 4
 
         if 0 == sum_type_dheaders:
@@ -929,7 +966,6 @@ cdef class EnclosureDevice(object):
         ret = ses.sg_ll_inquiry_pt(self.ptvp, False, 0, self.rsp_buff, 36, 0, &resid, False, 0)
         if ret != 0:
             self.start += snprintf(self.start, self.end - self.start, "%s does not respond to SCSI INQUIRY!\n", self.device)
-            self.clear_objs()
             return -1
         self.start += snprintf(self.start, self.end - self.start, "  %.8s  %.16s  %.4s\n", self.rsp_buff + 8, self.rsp_buff + 16, self.rsp_buff + 32)
         pd_type = 0x1f & self.rsp_buff[0]
@@ -939,9 +975,8 @@ cdef class EnclosureDevice(object):
                     self.start += snprintf(self.start, self.end - self.start, "    %s device has EncServ bit set.\n", cp)
             elif 0 != memcmp(b"NVMe", self.rsp_buff + 8, 4):
                 self.start += snprintf(self.start, self.end - self.start, "    %s device (not an enclosure).\n", cp)
-                self.clear_objs()
                 return -1
-        self.clear_objs()
+        self.clear_ptvp()
         return 0
 
     def get_element_descriptor(self):
@@ -956,6 +991,9 @@ cdef class EnclosureDevice(object):
         cdef int k, j
 
         with nogil:
+            if self.alloc_resp_buffs() != 0:
+                self.clear_objs()
+                raise OSError(-12, "Out of memory.")
             self.clear_r_buff()
             if self.sg_inquiry() != 0:
                 self.clear_objs()
@@ -1032,6 +1070,9 @@ cdef class EnclosureDevice(object):
         cdef int k, j
 
         with nogil:
+            if self.alloc_resp_buffs() != 0:
+                self.clear_objs()
+                raise OSError(-12, "Out of memory.")
             self.clear_r_buff()
             if self.sg_inquiry() != 0:
                 self.clear_objs()
@@ -1062,15 +1103,15 @@ cdef class EnclosureDevice(object):
                     with gil:
                         raise OSError(-1, bytes(self.r_buff, encoding='ascii').decode())
                 el = bp[3] + 4
-                el_types += bp[2];
+                el_types += bp[2]
                 if bp[1] != 0:
-                    self.start += snprintf(self.start, self.end - self.start, "    Subenclosure identifier: %d\n", bp[1]);
+                    self.start += snprintf(self.start, self.end - self.start, "    Subenclosure identifier: %d\n", bp[1])
                 else:
-                    self.start += snprintf(self.start, self.end - self.start, "    Subenclosure identifier: %d [primary]\n", bp[1]);
-                self.start += snprintf(self.start, self.end - self.start, "      relative ES process id: %d, number of ES processes: %d\n", ((bp[0] & 0x70) >> 4), (bp[0] & 0x7));
-                self.start += snprintf(self.start, self.end - self.start, "      number of type descriptor headers: %d\n", bp[2]);
+                    self.start += snprintf(self.start, self.end - self.start, "    Subenclosure identifier: %d [primary]\n", bp[1])
+                self.start += snprintf(self.start, self.end - self.start, "      relative ES process id: %d, number of ES processes: %d\n", ((bp[0] & 0x70) >> 4), (bp[0] & 0x7))
+                self.start += snprintf(self.start, self.end - self.start, "      number of type descriptor headers: %d\n", bp[2])
                 if el < 40:
-                    self.start += snprintf(self.start, self.end - self.start, "      enc descriptor len=%d ??\n", el);
+                    self.start += snprintf(self.start, self.end - self.start, "      enc descriptor len=%d ??\n", el)
                     bp += el
                     continue
                 self.start += snprintf(self.start, self.end - self.start, "      enclosure logical identifier (hex): ")
@@ -1117,6 +1158,9 @@ cdef class EnclosureDevice(object):
         cdef bint invop, infob, noncrit, crit, unrecov
 
         with nogil:
+            if self.alloc_resp_buffs() != 0:
+                self.clear_objs()
+                raise OSError(-12, "Out of memory.")
             self.clear_r_buff()
             if self.sg_inquiry() != 0:
                 self.clear_objs()
@@ -1275,6 +1319,9 @@ cdef class EnclosureDevice(object):
             raise OSError(-1, "Control command not correct.")
 
         with nogil:
+            if self.alloc_resp_buffs() != 0:
+                self.clear_objs()
+                raise OSError(-12, "Out of memory.")
             self.clear_r_buff()
             num_ths = self.build_tdhs(&ref_gen, &info)
             self.clear_ptvp()
@@ -1311,23 +1358,19 @@ cdef class EnclosureDevice(object):
                         self.clear_objs()
                         raise OSError(-1, "Unable to find Index: " + index)
                     with gil:
-                        if tp.etype not in self.acron2loc:
-                            self.clear_objs()
-                            raise OSError(-1, "Control field not allowed for Element type: " + str(tp.etype))
-                        if command[1] not in self.acron2loc[tp.etype]:
-                            self.clear_objs()
-                            raise OSError(-1, "Control field not correct for Element type: " + str(tp.etype))
-                        sbyte = self.acron2loc[tp.etype][command[1]][0]
-                        sbit = self.acron2loc[tp.etype][command[1]][1]
-                        nbits = self.acron2loc[tp.etype][command[1]][2]
+                        locs = self.get_acron2locs(tp.etype, command[1])
+                        sbyte = locs[0]
+                        sbit = locs[1]
+                        nbits = locs[2]
                     bp += (4 * ind_indiv)
                     if r:
                         value = ses.sg_get_big_endian(bp + sbyte, sbit, nbits)
                         break
                     elif w:
                         with gil:
+                            mask = self.get_et_mask(tp.etype)
                             for i in range(4):
-                                bp[i] &= self.element_dict[tp.etype][self.ELEM_MASK_IND][i]
+                                bp[i] &= mask[i]
                         ses.sg_set_big_endian(value, bp + sbyte, sbit, nbits)
                         bp[0] |= 0x80
                         len = ses.sg_get_unaligned_be16(self.rsp_buff + 2) + 4
